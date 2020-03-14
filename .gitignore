@@ -1,0 +1,11 @@
+/.vscode
+/test_folder
+/.history
+.gz
+.python-version
+/dataset
+*/__pycache__/
+/weights
+
+scripts/sine_fitting/__pycache__/
+scripts/image_classification/__pycache__/

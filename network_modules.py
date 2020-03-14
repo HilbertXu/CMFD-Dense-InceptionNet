@@ -8,6 +8,80 @@ import tensorflow.keras.backend as keras_backend
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '/gpu:0'
 
+class FeatureCorrelationMatchingModule:
+    def __init__(self):
+        self.treshold = 0.6
+        self.Lambda = 2
+
+    def distance_func(self, pixel_mat, feature_map):
+        '''
+        :param pixel_mat: [P_i, P_I, ...] N*N matrix with depth of M
+        :param feature_map: N x N x M Feature map
+        '''
+        pixel_matching_value = tf.negative(
+            tf.math.top_k(
+                tf.negative(
+                    tf.reduce_mean(
+                        tf.abs(
+                            tf.subtract(pixel_mat, feature_map)
+                        ), axis=1
+                    )
+                ), k=3, sorted=True
+            ).values
+        )
+        return self.metric_func(pixel_matching_value)
+
+    
+    def metric_func(self, pixel_matching_value):
+        '''
+        :param pixel_matching_value: A tf tensor: [Pci,i, Pci,j, Pci,k] according to Eq (5) in paper
+                                     P_j, P_k are two points which has the second and third-smallest negative correlation coefficient to P_i
+        '''
+        if tf.truediv(pixel_matching_value[1],pixel_matching_value[2]) < self.treshold:
+            metric_value = tf.truediv(2., tf.add(1., tf.exp(pixel_matching_value[1])))
+        else:
+            metric_value = tf.truediv(2., tf.add(1., tf.multiply(self.Lambda, tf.exp(pixel_matching_value[1]))))
+
+        return metric_value
+
+
+    def __call__(self, feature_map):
+        '''
+        :param feature_map: Output of Feature extractor [batchsz, N, N, M]
+        '''
+        size = feature_map.shape
+        # Setting up the NxNxM size according to the paper
+        N = size[1]
+        M = size[-1]
+        matching_maps = []
+        # Unpack batch dimension of feature maps tensor
+        feature_map = tf.unstack(feature_map, axis=0)
+        for fmap in feature_map:  
+            matching_map = []
+            # fmap: feature map for each image in a batch
+            # Reshape feature of size [N, N, M] to size [N*N, M]
+            fmap = tf.reshape(fmap, (N*N, M))
+            # Unpack the first dimension [(1, M)...]
+            flatten_fmap = tf.unstack(fmap, axis=0)
+            # For each pixel in NxN feature map
+            for pixel in flatten_fmap:
+                # For each pixel with M-dimension features values
+                pixel = tf.reshape(pixel, [1, M])  # Reshape ot to [1, M] for replicating
+                # Replicate pixel M-dimension feature values to a [NxN, M] matrix according to the Eq (4) in paper
+                pixel_mat = tf.tile(pixel, [N*N, 1])
+                # Eq (4) in paper compute
+                pixel_metric = self.distance_func(pixel_mat, flatten_fmap)
+                matching_map.append(pixel_metric)
+            matching_map = tf.stack(matching_map, axis=0)
+            matching_map = tf.reshape(matching_map, (N, N))
+            matching_maps.append(matching_map)
+        matching_maps = tf.stack(matching_maps, axis=0)
+        print (matching_maps.shape)
+        return matching_maps
+
+
+
+
 class PreProcessingBlock(tf.keras.layers.Layer):
     def __init__(self):
         super(PreProcessingBlock, self).__init__()
@@ -136,13 +210,15 @@ class PyramidFeatureExtractorModule(tf.keras.models.Model):
     def call(self, inputs, training=None, **kwargs):
         x = self.pre_process(inputs, training=training)
         x = self.pfe_1(x, training=training)
-        tmp_1 = self.transition_1(x, training=training)
-        x = self.pfe_2(tmp_1, training=training)
-        tmp_2 = self.transition_2(x, training=training)
-        x = self.pfe_3(tmp_2, training=training)
-        tmp_3 = self.transition_3(x, training=training)
+        feature_map_1 = self.transition_1(x, training=training)
+        x = self.pfe_2(feature_map_1, training=training)
+        feature_map_2 = self.transition_2(x, training=training)
+        x = self.pfe_3(feature_map_2, training=training)
+        feature_map_3 = self.transition_3(x, training=training)
 
-        return tmp_1, tmp_2, tmp_3
+        return feature_map_1, feature_map_2, feature_map_3
+
+
 
 if __name__ == '__main__':
     pfe_module = PyramidFeatureExtractorModule()
@@ -155,3 +231,6 @@ if __name__ == '__main__':
     print (feature_1.shape)
     print (feature_2.shape)
     print (feature_3.shape)
+    # pfe_module.summary()
+    print (pfe_module.trainable_variables)
+    FeatureCorrelationMatchingModule()(feature_1)
